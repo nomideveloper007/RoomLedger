@@ -37,7 +37,7 @@ export const SEED_MEMBERS: RoomMember[] = [
     id: 'mem-2',
     roomId: SEED_ROOM_ID,
     name: 'Ali Hassan',
-    email: 'ali@room.internal',
+    email: 'ali@gmail.com',
     role: 'editor',
     avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
     phone: '+92 301 2345678',
@@ -46,7 +46,7 @@ export const SEED_MEMBERS: RoomMember[] = [
     id: 'mem-3',
     roomId: SEED_ROOM_ID,
     name: 'Nabeel',
-    email: 'nabeel@room.internal',
+    email: 'nabeel@gmail.com',
     role: 'editor',
     avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
     phone: '+92 302 3456789',
@@ -55,7 +55,7 @@ export const SEED_MEMBERS: RoomMember[] = [
     id: 'mem-4',
     roomId: SEED_ROOM_ID,
     name: 'Faiz',
-    email: 'faiz@room.internal',
+    email: 'faiz@gmail.com',
     role: 'editor',
     avatarUrl: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80',
     phone: '+92 303 4567890',
@@ -64,7 +64,7 @@ export const SEED_MEMBERS: RoomMember[] = [
     id: 'mem-5',
     roomId: SEED_ROOM_ID,
     name: 'Arbab',
-    email: 'arbab@room.internal',
+    email: 'arbab@gmail.com',
     role: 'editor',
     avatarUrl: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=150&auto=format&fit=crop&q=80',
     phone: '+92 304 5678901',
@@ -212,7 +212,18 @@ export class RegisterStorage {
       localStorage.setItem(STORAGE_KEYS.MEMBERS, JSON.stringify(SEED_MEMBERS));
       return SEED_MEMBERS;
     }
-    return parsed;
+    let updated = false;
+    const migrated = parsed.map((m) => {
+      if (m.email && m.email.endsWith('@room.internal')) {
+        updated = true;
+        return { ...m, email: m.email.replace('@room.internal', '@gmail.com') };
+      }
+      return m;
+    });
+    if (updated) {
+      localStorage.setItem(STORAGE_KEYS.MEMBERS, JSON.stringify(migrated));
+    }
+    return migrated;
   }
 
   static updateMember(memberId: string, updates: Partial<RoomMember>): RoomMember {

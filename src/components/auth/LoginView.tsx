@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AuthService, AuthUser } from '../../lib/auth';
 import { useRoom } from '../../context/RoomContext';
 import { Wallet, ShieldCheck, Lock, Mail, ArrowRight, AlertCircle, Eye, EyeOff } from 'lucide-react';
+import { PWAInstallButton } from '../common/PWAInstallButton';
 
 interface LoginViewProps {
   onSuccess?: (user: AuthUser) => void;
@@ -40,6 +41,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ onSuccess, roomName = 'Roo
 
   return (
     <div className="min-h-screen bg-[#F7F9FC] flex flex-col justify-center items-center px-4 py-12 relative text-[#172B4D]">
+      {/* Top action bar: PWA Install Button */}
+      <div className="absolute top-4 right-4 z-20">
+        <PWAInstallButton compact />
+      </div>
+
       {/* Subtle background decoration */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[550px] h-[350px] bg-[#EFF6FF] rounded-full blur-3xl pointer-events-none" />
 
