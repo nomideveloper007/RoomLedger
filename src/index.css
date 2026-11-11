@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body {
+    overflow-x: hidden;
+    width: 100%;
+    min-height: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    color: #172B4D;
+    background-color: #F7F9FC;
+    text-rendering: optimizeLegibility;
+  }
+  
+  .font-mono, .tabular-nums {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Smooth momentum scrolling for mobile table containers */
+  .table-scroll-container {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: #CBD5E1 #F1F5F9;
+  }
+
+  .table-scroll-container::-webkit-scrollbar {
+    height: 6px;
+    width: 6px;
+  }
+
+  .table-scroll-container::-webkit-scrollbar-track {
+    background: #F1F5F9;
+    border-radius: 4px;
+  }
+
+  .table-scroll-container::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 4px;
+  }
+
+  .table-scroll-container::-webkit-scrollbar-thumb:hover {
+    background: #94A3B8;
+  }
+}
+
+@media print {
+  header, nav, aside, .no-print, button:not(.print-include) {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  .print-full {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+}

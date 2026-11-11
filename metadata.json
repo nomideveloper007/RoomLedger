@@ -1,0 +1,6 @@
+{
+  "name": "Simple Room Register",
+  "description": "Digital notebook register for 5 roommates. 2-row expense split ledger, monthly deposits, automatic settlement summary, and role-based permissions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

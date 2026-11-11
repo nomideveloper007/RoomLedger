@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="100%" stop-color="#142B4A"/>
+    </linearGradient>
+  </defs>
+  <!-- Background with smooth rounded corners -->
+  <rect width="512" height="512" rx="120" fill="url(#brandGrad)"/>
+  
+  <!-- Outer Glow / Inner Border -->
+  <rect x="8" y="8" width="496" height="496" rx="112" stroke="white" stroke-opacity="0.12" stroke-width="8"/>
+  
+  <!-- Main Wallet Body -->
+  <rect x="110" y="150" width="292" height="212" rx="28" fill="white" filter="drop-shadow(0 12px 24px rgba(0,0,0,0.18))"/>
+  
+  <!-- Top Flap Line -->
+  <path d="M110 200 H402" stroke="#2563EB" stroke-width="8" stroke-dasharray="12 8" stroke-linecap="round"/>
+  
+  <!-- Clasp / Pocket Latch -->
+  <path d="M280 216 H386 C400 216 412 228 412 242 V270 C412 284 400 296 386 296 H280 C266 296 254 284 254 270 V242 C254 228 266 216 280 216 Z" fill="#142B4A"/>
+  
+  <!-- Clasp Gold / Blue Rivet Button -->
+  <circle cx="346" cy="256" r="14" fill="#3B82F6"/>
+  <circle cx="346" cy="256" r="6" fill="white"/>
+</svg>
+
