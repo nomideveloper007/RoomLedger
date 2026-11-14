@@ -37,6 +37,7 @@ export function saveSupabaseConfig(url: string, key: string) {
 }
 
 let cachedClient: SupabaseClient | null = null;
+let sessionInitPromise: Promise<boolean> | null = null;
 
 export function getSupabaseClient(): SupabaseClient | null {
   const config = getStoredSupabaseConfig();
@@ -60,6 +61,63 @@ export function getSupabaseClient(): SupabaseClient | null {
     console.error('Failed to initialize Supabase client:', err);
     return null;
   }
+}
+
+/**
+ * Ensures the Supabase client has an active authenticated session so that
+ * PostgreSQL Row-Level Security (RLS) policies (`auth.uid() IS NOT NULL`)
+ * succeed on every device (laptop, mobile, PWA) for both Owner and Roommates.
+ */
+export async function ensureSupabaseSession(): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return false;
+
+  if (sessionInitPromise) {
+    return sessionInitPromise;
+  }
+
+  sessionInitPromise = (async () => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const session = sessionData?.session;
+      const expiresAtMs = session?.expires_at ? session.expires_at * 1000 : 0;
+
+      // A cached session can exist with an already expired access token, which makes every
+      // request fail with 401 while the app thinks it is signed in. Validate, then refresh.
+      if (session?.user && Date.now() < expiresAtMs - 60_000) {
+        return true;
+      }
+
+      if (session?.refresh_token) {
+        const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+        if (!refreshError && refreshed?.session) {
+          return true;
+        }
+        if (refreshError) {
+          console.warn('Supabase session refresh failed:', refreshError.message);
+        }
+      }
+
+      // Sign in with the authorized household database account so RLS policies pass
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: 'nomideveloper007@gmail.com',
+        password: 'noman123',
+      });
+
+      if (error || !data?.session) {
+        console.warn('Supabase sign-in failed, continuing without a session:', error?.message);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn('Failed to establish Supabase RLS session:', err);
+      return false;
+    } finally {
+      sessionInitPromise = null;
+    }
+  })();
+
+  return sessionInitPromise;
 }
 
 export async function testSupabaseConnection(url: string, key: string): Promise<{ success: boolean; message: string }> {

@@ -371,6 +371,38 @@ DROP POLICY IF EXISTS "Authorized user can read audit logs" ON audit_logs;
 CREATE POLICY "Authorized user can read audit logs" ON audit_logs
     FOR SELECT TO authenticated USING (auth.uid() IS NOT NULL);
 
+-- =====================================================================
+-- 11. Roommate removal fix-ups (idempotent — safe to re-run in the SQL Editor)
+-- =====================================================================
+-- "Who recorded this" columns must never block removing a roommate. Without this,
+-- deleting a roommate who once recorded an entry fails and is downgraded to an archive.
+ALTER TABLE deposits DROP CONSTRAINT IF EXISTS deposits_created_by_fkey;
+ALTER TABLE deposits ADD CONSTRAINT deposits_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES room_members(id) ON DELETE SET NULL;
+
+ALTER TABLE expenses DROP CONSTRAINT IF EXISTS expenses_created_by_fkey;
+ALTER TABLE expenses ADD CONSTRAINT expenses_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES room_members(id) ON DELETE SET NULL;
+
+ALTER TABLE settlements DROP CONSTRAINT IF EXISTS settlements_created_by_fkey;
+ALTER TABLE settlements ADD CONSTRAINT settlements_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES room_members(id) ON DELETE SET NULL;
+
+ALTER TABLE wallet_transactions DROP CONSTRAINT IF EXISTS wallet_transactions_performed_by_fkey;
+ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_transactions_performed_by_fkey
+    FOREIGN KEY (performed_by) REFERENCES room_members(id) ON DELETE SET NULL;
+
+-- Settlements only had SELECT / INSERT / DELETE policies, so the app could never
+-- clear settlements.created_by before removing a roommate.
+DROP POLICY IF EXISTS "Authorized user can update settlements" ON settlements;
+CREATE POLICY "Authorized user can update settlements" ON settlements
+    FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL) WITH CHECK (auth.uid() IS NOT NULL);
+
+-- Monthly Starting Day (e.g. 10 → the register month runs 10 Nov … 9 Dec) is shared with the
+-- whole household. Without this column the app keeps the setting per device.
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS month_start_day INTEGER NOT NULL DEFAULT 1
+    CHECK (month_start_day BETWEEN 1 AND 31);
+
 -- Enable Supabase Realtime for instant updates (safely handle already-added tables)
 DO $$
 BEGIN

@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useRoom } from '../../context/RoomContext';
+import { getRegisterMonthRange } from '../../lib/storage';
 import { formatCurrencyPKR } from '../../lib/export';
 import { Expense, Deposit, SuggestedTransfer } from '../../types';
 import confetti from 'canvas-confetti';
@@ -44,9 +45,16 @@ function formatDateDisplay(dateStr: string): string {
   }
 }
 
+function formatMonthDay(iso: string): string {
+  const [year, month, day] = iso.split('-').map(Number);
+  if (!year || !month || !day) return iso;
+  return new Date(year, month - 1, day).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
 export const MonthlyRegisterView: React.FC = () => {
   const {
     selectedMonth,
+    room,
     autoMonthInfo,
     members,
     activeUser,
@@ -81,6 +89,41 @@ export const MonthlyRegisterView: React.FC = () => {
   const [depositAmount, setDepositAmount] = useState('15000');
   const [depositDate, setDepositDate] = useState(() => `${selectedMonth}-01`);
   const [depositNotes, setDepositNotes] = useState('');
+
+  // Keep form member IDs and dates aligned when members or selectedMonth syncs from Supabase
+  useEffect(() => {
+    if (members.length > 0) {
+      if (!paidByMemberId || !members.some((m) => m.id === paidByMemberId)) {
+        setPaidByMemberId(members[0].id);
+      }
+      if (!depositMemberId || !members.some((m) => m.id === depositMemberId)) {
+        setDepositMemberId(members[0].id);
+      }
+      setSelectedParticipants((prev) => {
+        const valid = prev.filter((id) => members.some((m) => m.id === id));
+        return valid.length > 0 ? valid : members.map((m) => m.id);
+      });
+    }
+  }, [members]);
+
+  // The visible register month may start on any day (e.g. 10 Nov – 9 Dec when the
+  // Monthly Starting Day is 10), so new entries default to a date inside that range.
+  const monthRange = getRegisterMonthRange(selectedMonth, room.monthStartDay || 1);
+  const monthRangeLabel = monthRange.startDate
+    ? `${formatMonthDay(monthRange.startDate)} – ${formatMonthDay(monthRange.endDate)}`
+    : '';
+
+  const defaultEntryDate = (): string => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (!monthRange.startDate) return `${selectedMonth}-01`;
+    return todayStr >= monthRange.startDate && todayStr <= monthRange.endDate ? todayStr : monthRange.startDate;
+  };
+
+  useEffect(() => {
+    setExpenseDate(defaultEntryDate());
+    setDepositDate(defaultEntryDate());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMonth, room.monthStartDay]);
 
   // Form states for Edit Expense
   const [editDesc, setEditDesc] = useState('');
@@ -293,7 +336,7 @@ export const MonthlyRegisterView: React.FC = () => {
                 Month-End Auto Transition: {formattedMonth} Register has Automatically Started!
               </span>
               <span className="text-[11px] sm:text-xs text-[#3B82F6] block mt-0.5">
-                Aaj pichlay maheene ki aakhri tareekh (Day {autoMonthInfo.lastDateOfMonth}) hai, is liye agla maheena ({formattedMonth}) register mein khud-bakhud start ho chuka hai. Pichla balance ({formatCurrencyPKR(monthSummary.openingCarryOverBalance || 0)}) common wallet mein mehfooz carryover ho gaya hai.
+                Aaj register month ki aakhri tareekh (Day {autoMonthInfo.lastDateOfMonth}) hai, is liye agla maheena ({formattedMonth}) register mein khud-bakhud start ho chuka hai. Pichla balance ({formatCurrencyPKR(monthSummary.openingCarryOverBalance || 0)}) common wallet mein mehfooz carryover ho gaya hai.
               </span>
             </div>
           </div>
@@ -320,6 +363,12 @@ export const MonthlyRegisterView: React.FC = () => {
             <span>Equal {members.length}-way division for shared expenses</span>
             <span className="text-slate-500 hidden sm:inline">•</span>
             <span className="text-blue-300 font-semibold font-mono">Pakistani Rupee (PKR)</span>
+            {monthRangeLabel && (
+              <>
+                <span className="text-slate-500 hidden sm:inline">•</span>
+                <span className="text-emerald-300 font-semibold font-mono">{monthRangeLabel}</span>
+              </>
+            )}
           </p>
         </div>
 
@@ -405,7 +454,7 @@ export const MonthlyRegisterView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  setExpenseDate(`${selectedMonth}-05`);
+                  setExpenseDate(defaultEntryDate());
                   setIsAddExpenseOpen(true);
                 }}
                 className="px-3 py-2.5 sm:px-4 sm:py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer bg-[#2563EB] hover:bg-[#1D4ED8] text-white min-h-[42px] touch-manipulation"

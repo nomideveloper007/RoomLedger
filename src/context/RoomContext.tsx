@@ -8,7 +8,7 @@ import {
   MonthlyRegisterSummary,
   UserRole,
 } from '../types';
-import { RegisterStorage, subscribeToRegisterRealtime } from '../lib/storage';
+import { RegisterStorage, subscribeToRegisterRealtime, getRegisterSyncStatus, RegisterSyncStatus } from '../lib/storage';
 import { AuthService, AuthUser } from '../lib/auth';
 import { getSupabaseClient } from '../lib/supabase';
 
@@ -59,6 +59,9 @@ interface RoomContextType {
   monthSummary: MonthlyRegisterSummary;
 
   // Actions
+  syncStatus: RegisterSyncStatus;
+  syncNow: () => Promise<void>;
+
   addExpense: (data: {
     description: string;
     amount: number;
@@ -95,8 +98,10 @@ interface RoomContextType {
     role?: UserRole,
     email?: string,
     password?: string
-  ) => Promise<RoomMember | undefined>;
-  removeMember: (memberId: string) => void;
+  ) => Promise<{ success: boolean; member?: RoomMember; error?: string }>;
+  removeMember: (
+    memberId: string
+  ) => Promise<{ success: boolean; deleted: boolean; deactivated: boolean; error?: string }>;
   updateRoom: (updates: Partial<Room>) => void;
   resetAll: () => void;
 }
@@ -112,6 +117,7 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const res = await AuthService.login(email, password);
     if (res.success && res.user) {
       setAuthAccount(res.user);
+      await RegisterStorage.syncWithSupabase();
       const currentMembers = RegisterStorage.getMembers();
       const matched =
         currentMembers.find((m) => m.id === res.user?.id) ||
@@ -120,6 +126,7 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
         RegisterStorage.setActiveUserId(matched.id);
         setActiveUserIdState(matched.id);
       }
+      refresh();
       return { success: true };
     }
     return { success: false, error: res.error };
@@ -142,6 +149,7 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [allSettlements, setAllSettlements] = useState<Settlement[]>(() => RegisterStorage.getSettlements());
 
   const [autoMonthInfo, setAutoMonthInfo] = useState(() => RegisterStorage.getEffectiveAutoMonth());
+  const [syncStatus, setSyncStatus] = useState<RegisterSyncStatus>(() => getRegisterSyncStatus());
 
   const [monthSummary, setMonthSummary] = useState<MonthlyRegisterSummary>(() =>
     RegisterStorage.calculateMonthlySummary(selectedMonth)
@@ -167,13 +175,46 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAllDeposits(dep);
     setAllSettlements(set);
     setMonthSummary(summary);
+    setSyncStatus(getRegisterSyncStatus());
   }, []);
+
+  const syncNow = useCallback(async () => {
+    await RegisterStorage.syncWithSupabase();
+    refresh();
+  }, [refresh]);
 
   useEffect(() => {
     const unsub = subscribeToRegisterRealtime(() => {
       refresh();
     });
-    return () => unsub();
+
+    // Initial cloud sync with Supabase on mount
+    RegisterStorage.syncWithSupabase();
+
+    // Sync whenever browser tab regains focus or becomes visible
+    const handleFocus = () => {
+      RegisterStorage.syncWithSupabase();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        RegisterStorage.syncWithSupabase();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    // Periodic background sync every 15 seconds for multi-device consistency
+    const syncTimer = window.setInterval(() => {
+      RegisterStorage.syncWithSupabase();
+    }, 15 * 1000);
+
+    return () => {
+      unsub();
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.clearInterval(syncTimer);
+    };
   }, [refresh]);
 
   // Check every minute whether the auto month changed (e.g. midnight on the last date)
@@ -263,8 +304,8 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     : members.find((m) => m.id === activeUserId) ||
       members[0] || {
-        id: 'mem-1',
-        roomId: 'room-register-001',
+        id: '10159410-71a4-4bb5-9f62-3d35b3635461',
+        roomId: '2d87ab1f-e0f5-420b-9799-9bb215914da9',
         name: 'Noman',
         email: 'nomideveloper007@gmail.com',
         role: 'owner' as UserRole,
@@ -289,6 +330,11 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!canEdit) {
       alert('View-only access: you do not have permission to add expenses.');
       return;
+    }
+    const expMonth = RegisterStorage.getRegisterMonthFor(data.expenseDate);
+    if (expMonth && expMonth !== selectedMonth) {
+      RegisterStorage.setSelectedMonth(expMonth);
+      setSelectedMonthState(expMonth);
     }
     RegisterStorage.addExpense({
       ...data,
@@ -328,6 +374,11 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
       alert('View-only access: you do not have permission to add deposits.');
       return;
     }
+    const depMonth = RegisterStorage.getRegisterMonthFor(data.depositDate);
+    if (depMonth && depMonth !== selectedMonth) {
+      RegisterStorage.setSelectedMonth(depMonth);
+      setSelectedMonthState(depMonth);
+    }
     RegisterStorage.addDeposit({
       ...data,
       createdBy: activeUser.id,
@@ -357,7 +408,7 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     RegisterStorage.addSettlement({
       ...data,
-      month: selectedMonth,
+      month: RegisterStorage.getRegisterMonthFor(data.settlementDate),
       createdBy: activeUser.id,
     });
     refresh();
@@ -391,10 +442,6 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (target?.email) {
       AuthService.updateMemberRole(target.email, role);
-      const supabase = getSupabaseClient();
-      if (supabase) {
-        supabase.from('room_members').update({ role }).eq('email', target.email).then(() => {});
-      }
     }
     refresh();
   };
@@ -404,52 +451,63 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
     role: UserRole = 'viewer',
     email?: string,
     password?: string
-  ): Promise<RoomMember | undefined> => {
+  ): Promise<{ success: boolean; member?: RoomMember; error?: string }> => {
     if (!isOwner) {
-      alert('Only the Owner can add members.');
-      return undefined;
+      return { success: false, error: 'Only the Owner can add roommates.' };
     }
-    if (!name.trim()) return undefined;
+    if (!name.trim()) {
+      return { success: false, error: 'Please enter a roommate name.' };
+    }
     const cleanEmail =
       email && email.trim()
         ? email.trim().toLowerCase()
-        : `${name.toLowerCase().replace(/\s+/g, '.')}@room.internal`;
+        : `${name.trim().toLowerCase().replace(/\s+/g, '.')}@gmail.com`;
 
-    const newMember = RegisterStorage.addMember(name.trim(), role, cleanEmail);
+    const result = await RegisterStorage.addMember(name.trim(), role, cleanEmail);
+    if (!result.member) {
+      return { success: false, error: result.error || 'Could not add the roommate.' };
+    }
 
     if (password && password.trim()) {
       await AuthService.saveMemberCredentials(
-        newMember.id,
-        newMember.name,
+        result.member.id,
+        result.member.name,
         cleanEmail,
         password.trim(),
         role
       );
     }
     refresh();
-    return newMember;
+    return { success: true, member: result.member };
   };
 
-  const removeMember = (memberId: string) => {
+  const removeMember = async (
+    memberId: string
+  ): Promise<{ success: boolean; deleted: boolean; deactivated: boolean; error?: string }> => {
     if (!isOwner) {
-      alert('Only the Owner can remove members.');
-      return;
+      return { success: false, deleted: false, deactivated: false, error: 'Only the Owner can remove roommates.' };
     }
     const current = RegisterStorage.getMembers();
     if (current.length <= 1) {
-      alert('Cannot remove the last member.');
-      return;
+      return {
+        success: false,
+        deleted: false,
+        deactivated: false,
+        error: 'At least one roommate must remain in the register.',
+      };
     }
     const target = current.find((m) => m.id === memberId);
     if (target?.role === 'owner') {
-      alert('Cannot remove the Owner.');
-      return;
+      return { success: false, deleted: false, deactivated: false, error: 'Cannot remove the Owner account.' };
     }
+
     if (target?.email) {
       AuthService.removeMemberCredentials(target.email);
     }
-    RegisterStorage.removeMember(memberId);
+
+    const result = await RegisterStorage.removeMember(memberId);
     refresh();
+    return { ...result, success: !result.error };
   };
 
   const updateRoom = (updates: Partial<Room>) => {
@@ -469,13 +527,25 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Filter records for the selected month and sort chronologically ascending (oldest date first)
   const monthExpenses = allExpenses
     .filter((e) => e.month === selectedMonth)
-    .sort((a, b) => a.expenseDate.localeCompare(b.expenseDate) || a.createdAt.localeCompare(b.createdAt));
+    .sort(
+      (a, b) =>
+        (a.expenseDate || '').localeCompare(b.expenseDate || '') ||
+        (a.createdAt || '').localeCompare(b.createdAt || '')
+    );
   const monthDeposits = allDeposits
     .filter((d) => d.month === selectedMonth)
-    .sort((a, b) => a.depositDate.localeCompare(b.depositDate) || a.createdAt.localeCompare(b.createdAt));
+    .sort(
+      (a, b) =>
+        (a.depositDate || '').localeCompare(b.depositDate || '') ||
+        (a.createdAt || '').localeCompare(b.createdAt || '')
+    );
   const monthSettlements = allSettlements
     .filter((s) => s.month === selectedMonth)
-    .sort((a, b) => a.settlementDate.localeCompare(b.settlementDate) || a.createdAt.localeCompare(b.createdAt));
+    .sort(
+      (a, b) =>
+        (a.settlementDate || '').localeCompare(b.settlementDate || '') ||
+        (a.createdAt || '').localeCompare(b.createdAt || '')
+    );
 
   return (
     <RoomContext.Provider
@@ -504,6 +574,8 @@ export const RoomProvider: React.FC<{ children: React.ReactNode }> = ({ children
         monthDeposits,
         monthSettlements,
         monthSummary,
+        syncStatus,
+        syncNow,
         addExpense,
         updateExpense,
         deleteExpense,

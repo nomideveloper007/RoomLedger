@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useRoom } from '../../context/RoomContext';
 import { AuthService } from '../../lib/auth';
 import { getStoredSupabaseConfig, testSupabaseConnection, getSupabaseClient } from '../../lib/supabase';
+import { getRegisterMonth, getRegisterMonthRange } from '../../lib/storage';
 import { RoomMember, UserRole } from '../../types';
 import { PWAInstallButton } from '../common/PWAInstallButton';
 import {
@@ -45,14 +46,48 @@ export const SettingsView: React.FC = () => {
     updateRoom,
     isOwner,
     resetAll,
+    selectedMonth,
+    goToCurrentMonth,
     autoMonthInfo,
     setSimulatedDate,
+    syncStatus,
+    syncNow,
   } = useRoom();
 
   const [registerName, setRegisterName] = useState(room.name);
   const [memberNames, setMemberNames] = useState<string[]>(() => members.map((m) => m.name));
   const [targetAmount, setTargetAmount] = useState(room.monthlyContributionTarget.toString());
   const [startDay, setStartDay] = useState(room.monthStartDay.toString());
+
+  // Preview of the register month range for the entered starting day (e.g. 10 Nov → 9 Dec).
+  const previewStartDay = Math.min(Math.max(parseInt(startDay, 10) || 1, 1), 31);
+  const previewRange = getRegisterMonthRange(selectedMonth, previewStartDay);
+  const formatRangeDay = (iso: string) => {
+    const [year, month, day] = iso.split('-').map(Number);
+    if (!year || !month || !day) return iso;
+    return new Date(year, month - 1, day).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  };
+  const startDayHint = previewRange.startDate
+    ? `${formatRangeDay(previewRange.startDate)} → ${formatRangeDay(previewRange.endDate)}${
+        previewStartDay === 1 ? ' (default: 1st of each month)' : ''
+      }`
+    : 'Default: 1st of each month';
+
+  // Progress inside the register month of the starting day currently typed above (not yet saved).
+  const diffDays = (fromIso: string, toIso: string) =>
+    Math.round((Date.parse(`${toIso}T00:00:00`) - Date.parse(`${fromIso}T00:00:00`)) / 86400000);
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const currentRange = getRegisterMonthRange(getRegisterMonth(todayIso, previewStartDay), previewStartDay);
+  const registerMonthDays = currentRange.startDate ? diffDays(currentRange.startDate, currentRange.endDate) + 1 : 30;
+  const registerDayNumber = currentRange.startDate
+    ? Math.min(Math.max(diffDays(currentRange.startDate, todayIso) + 1, 1), registerMonthDays)
+    : 1;
+  const registerDaysRemaining = Math.max(registerMonthDays - registerDayNumber, 0);
+  const lastRegisterDateLabel = currentRange.endDate ? formatRangeDay(currentRange.endDate) : '';
 
   // Notification state
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
@@ -80,7 +115,22 @@ export const SettingsView: React.FC = () => {
 
     const cleanEmail = newMemberEmail.trim()
       ? newMemberEmail.trim().toLowerCase()
-      : `${cleanName.toLowerCase().replace(/\s+/g, '.')}@room.internal`;
+      : `${cleanName.toLowerCase().replace(/\s+/g, '.')}@gmail.com`;
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setMemberActionMsg({ type: 'error', text: 'Please enter a valid email address.' });
+      return;
+    }
+
+    // One email can only belong to one roommate (checked against this device and Supabase)
+    const emailOwner = members.find((m) => (m.email || '').trim().toLowerCase() === cleanEmail);
+    if (emailOwner) {
+      setMemberActionMsg({
+        type: 'error',
+        text: `"${cleanEmail}" is already used by ${emailOwner.name}. One email can only be used by one roommate.`,
+      });
+      return;
+    }
 
     const cleanPass = newMemberPassword.trim() || `${cleanName.toLowerCase().replace(/\s+/g, '')}123`;
 
@@ -90,53 +140,27 @@ export const SettingsView: React.FC = () => {
     }
 
     setIsSavingMember(true);
+    setMemberActionMsg(null);
 
     try {
-      // 1. Add locally with credentials
-      await addMember(cleanName, newMemberRole, cleanEmail, cleanPass);
+      // Saves the roommate + hashed login credentials to Supabase room_members and the local cache
+      const result = await addMember(cleanName, newMemberRole, cleanEmail, cleanPass);
 
-      // 2. Direct automatic save to Supabase
-      const supabase = getSupabaseClient();
-      if (supabase) {
-        try {
-          // Direct Auth signup in Supabase
-          await supabase.auth.signUp({
-            email: cleanEmail,
-            password: cleanPass,
-            options: {
-              data: {
-                full_name: cleanName,
-                role: newMemberRole,
-              },
-            },
-          });
-
-          // Direct room_members insert/upsert in Supabase
-          const { data: roomData } = await supabase.from('rooms').select('id').limit(1).maybeSingle();
-          if (roomData?.id) {
-            await supabase.from('room_members').upsert({
-              room_id: roomData.id,
-              name: cleanName,
-              email: cleanEmail,
-              role: newMemberRole,
-              is_active: true,
-            }, { onConflict: 'room_id,email' });
-          }
-        } catch (supaErr) {
-          console.warn('Supabase sync notice:', supaErr);
-        }
+      if (!result.success) {
+        setMemberActionMsg({ type: 'error', text: result.error || 'Could not add the roommate.' });
+        return;
       }
 
       setMemberActionMsg({
         type: 'success',
-        text: `Roommate "${cleanName}" (${cleanEmail}) Supabase aur Register mein directly save ho gaya!`,
+        text: `"${cleanName}" added to Supabase. Login: ${cleanEmail} / ${cleanPass}`,
       });
 
       setNewMemberName('');
       setNewMemberEmail('');
       setNewMemberPassword('');
       setIsAddingMemberOpen(false);
-      setTimeout(() => setMemberActionMsg(null), 4000);
+      setTimeout(() => setMemberActionMsg(null), 8000);
     } catch (err: any) {
       setMemberActionMsg({
         type: 'error',
@@ -147,22 +171,45 @@ export const SettingsView: React.FC = () => {
     }
   };
 
-  const handleRemoveMember = (member: RoomMember) => {
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
+
+  const handleRemoveMember = async (member: RoomMember) => {
     if (member.role === 'owner') {
-      alert('Cannot delete the Owner account.');
+      setMemberActionMsg({ type: 'error', text: 'Cannot delete the Owner account.' });
       return;
     }
     if (members.length <= 1) {
-      alert('At least one member must remain in the register.');
+      setMemberActionMsg({ type: 'error', text: 'At least one roommate must remain in the register.' });
       return;
     }
-    if (window.confirm(`Are you sure you want to remove roommate "${member.name}"?`)) {
-      removeMember(member.id);
-      setMemberActionMsg({
-        type: 'success',
-        text: `Roommate "${member.name}" removed from register.`,
-      });
-      setTimeout(() => setMemberActionMsg(null), 3500);
+    if (
+      !window.confirm(
+        `Delete "${member.name}" (${member.email})?\n\nThis removes the roommate from Supabase and revokes their login.`
+      )
+    ) {
+      return;
+    }
+
+    setRemovingMemberId(member.id);
+    setMemberActionMsg(null);
+    try {
+      const result = await removeMember(member.id);
+      if (result.error) {
+        setMemberActionMsg({ type: 'error', text: result.error });
+      } else if (result.deleted) {
+        setMemberActionMsg({
+          type: 'success',
+          text: `"${member.name}" deleted from Supabase and the register.`,
+        });
+      } else {
+        setMemberActionMsg({
+          type: 'success',
+          text: `"${member.name}" archived: their expenses/deposits stay in the register, but the login is revoked and they no longer appear as a roommate.`,
+        });
+      }
+      setTimeout(() => setMemberActionMsg(null), 8000);
+    } finally {
+      setRemovingMemberId(null);
     }
   };
 
@@ -191,6 +238,13 @@ export const SettingsView: React.FC = () => {
     setIsTestingSupabase(false);
   };
 
+  const [isSyncingNow, setIsSyncingNow] = useState(false);
+  const handleSyncNow = async () => {
+    setIsSyncingNow(true);
+    await syncNow();
+    setIsSyncingNow(false);
+  };
+
   const handleMemberNameChange = (index: number, newName: string) => {
     const updated = [...memberNames];
     updated[index] = newName;
@@ -199,12 +253,19 @@ export const SettingsView: React.FC = () => {
 
   const handleSaveAll = (e: React.FormEvent) => {
     e.preventDefault();
+    const nextStartDay = Math.min(Math.max(parseInt(startDay, 10) || 1, 1), 31);
+    setStartDay(String(nextStartDay));
     updateMemberNames(memberNames);
     updateRoom({
       name: registerName.trim(),
       monthlyContributionTarget: parseFloat(targetAmount) || 15000,
-      monthStartDay: parseInt(startDay, 10) || 1,
+      monthStartDay: nextStartDay,
     });
+
+    // A different starting day changes which register month today belongs to.
+    if (nextStartDay !== room.monthStartDay) {
+      goToCurrentMonth();
+    }
 
     setSaveSuccess('Register configuration and roommate names saved successfully!');
     setTimeout(() => setSaveSuccess(null), 3000);
@@ -320,7 +381,7 @@ export const SettingsView: React.FC = () => {
               <input
                 type="number"
                 min="1"
-                max="28"
+                max="31"
                 disabled={!isOwner}
                 value={startDay}
                 onChange={(e) => setStartDay(e.target.value)}
@@ -330,7 +391,9 @@ export const SettingsView: React.FC = () => {
                     : 'bg-[#F1F5F9] cursor-not-allowed select-none'
                 } min-h-[44px]`}
               />
-              <span className="text-[11px] text-[#94A3B8] mt-0.5 block">Default: 1st of each month</span>
+              <span className="text-[11px] text-[#94A3B8] mt-0.5 block">
+                Register month: <strong className="text-[#475569]">{startDayHint}</strong>
+              </span>
             </div>
 
             {/* Auto-start Month on Last Day feature info & simulation */}
@@ -343,10 +406,10 @@ export const SettingsView: React.FC = () => {
                     </span>
                     <div>
                       <span className="text-xs font-bold text-[#142B4A] block">
-                        Auto-Start New Month on Month's Last Date
+                        Auto-Start New Month on the Last Day of the Register Month
                       </span>
                       <span className="text-[11px] text-[#64748B]">
-                        Jab bhi maheene ki aakhri tareekh (jaise 30 ya 31) aati hai, agla naya maheena khud-bakhud register mein start ho jata hai.
+                        Register month day {previewStartDay} se shuru hota hai, is liye us se pehle wali aakhri tareekh par agla maheena khud-bakhud start ho jata hai.
                       </span>
                     </div>
                   </div>
@@ -358,15 +421,15 @@ export const SettingsView: React.FC = () => {
                 {/* Status & Simulation Bar */}
                 <div className="flex items-center justify-between flex-wrap gap-2 pt-2 border-t border-[#E2E8F0] text-[11px]">
                   <div className="text-[#64748B] flex items-center gap-1.5 flex-wrap">
-                    <span>Current Calendar Day:</span>
-                    <strong className="text-[#142B4A] font-mono">Day {autoMonthInfo?.todayDate} of {autoMonthInfo?.lastDateOfMonth}</strong>
+                    <span>Register Month Day:</span>
+                    <strong className="text-[#142B4A] font-mono">Day {registerDayNumber} of {registerMonthDays}</strong>
                     {autoMonthInfo?.isLastDay ? (
                       <span className="px-1.5 py-0.5 rounded font-bold text-[10px] bg-amber-100 text-amber-800 border border-amber-300">
                         Final Date Active · {autoMonthInfo?.nextMonth} Auto-Started
                       </span>
                     ) : (
                       <span className="text-[#94A3B8]">
-                        ({autoMonthInfo ? autoMonthInfo.lastDateOfMonth - autoMonthInfo.todayDate : 0} days remaining)
+                        ({registerDaysRemaining} days remaining)
                       </span>
                     )}
                     {autoMonthInfo?.isSimulated && (
@@ -383,17 +446,13 @@ export const SettingsView: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => {
-                          const now = new Date();
-                          const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-                          const y = last.getFullYear();
-                          const m = String(last.getMonth() + 1).padStart(2, '0');
-                          const d = String(last.getDate()).padStart(2, '0');
-                          setSimulatedDate(`${y}-${m}-${d}T12:00:00`);
+                          const lastDate = currentRange.endDate || todayIso;
+                          setSimulatedDate(`${lastDate}T12:00:00`);
                         }}
                         className="px-2.5 py-1 text-[11px] font-semibold bg-[#EFF6FF] text-[#2563EB] hover:bg-[#DBEAFE] rounded-lg border border-[#2563EB]/20 transition-colors cursor-pointer"
-                        title="Simulate the last date of this month to test the automatic new-month start"
+                        title="Simulate the last date of the register month to test the automatic new-month start"
                       >
-                        ⚡ Test Last Day ({new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})
+                        ⚡ Test Last Day ({lastRegisterDateLabel})
                       </button>
                     ) : (
                       <button
@@ -484,7 +543,7 @@ export const SettingsView: React.FC = () => {
                       setNewMemberName(e.target.value);
                       if (!newMemberEmail) {
                         const slug = e.target.value.toLowerCase().replace(/\s+/g, '.');
-                        setNewMemberEmail(slug ? `${slug}@room.internal` : '');
+                        setNewMemberEmail(slug ? `${slug}@gmail.com` : '');
                       }
                       if (!newMemberPassword) {
                         const passSlug = e.target.value.toLowerCase().replace(/\s+/g, '');
@@ -527,6 +586,9 @@ export const SettingsView: React.FC = () => {
                     placeholder="e.g. usman@gmail.com"
                     className="w-full px-3 py-2 text-xs sm:text-sm font-mono border border-[#CBD5E1] rounded-lg bg-white text-[#172B4D] focus:outline-none focus:ring-2 focus:ring-[#2563EB] min-h-[42px]"
                   />
+                  <span className="text-[10px] text-[#94A3B8] mt-1 block">
+                    One email can only be used by one roommate.
+                  </span>
                 </div>
 
                 {/* Login Password */}
@@ -640,9 +702,14 @@ export const SettingsView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => handleRemoveMember(m)}
-                    title={`Delete "${m.name}"`}
+                    disabled={removingMemberId === m.id}
+                    title={`Delete "${m.name}" from Supabase and the register`}
                     aria-label={`Delete ${m.name}`}
-                    className="p-1.5 text-[#94A3B8] hover:text-[#DC2626] hover:bg-[#FEF2F2] rounded-lg border border-transparent hover:border-[#FCA5A5] transition-colors cursor-pointer shrink-0"
+                    className={`p-1.5 rounded-lg border border-transparent transition-colors cursor-pointer shrink-0 ${
+                      removingMemberId === m.id
+                        ? 'text-[#CBD5E1] cursor-wait'
+                        : 'text-[#94A3B8] hover:text-[#DC2626] hover:bg-[#FEF2F2] hover:border-[#FCA5A5]'
+                    }`}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -942,6 +1009,15 @@ export const SettingsView: React.FC = () => {
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
+                  onClick={handleSyncNow}
+                  disabled={isSyncingNow}
+                  className="px-3 py-1.5 text-xs font-semibold bg-[#F0FDF4] text-[#16A34A] hover:bg-[#16A34A] hover:text-white border border-[#16A34A]/40 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 min-h-[36px]"
+                >
+                  {isSyncingNow ? 'Syncing...' : 'Sync Now'}
+                </button>
+
+                <button
+                  type="button"
                   onClick={handleTestSupabase}
                   disabled={isTestingSupabase}
                   className="px-3 py-1.5 text-xs font-semibold bg-[#EFF6FF] text-[#2563EB] hover:bg-[#2563EB] hover:text-white border border-[#CBD5E1]/60 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 min-h-[36px]"
@@ -977,6 +1053,41 @@ export const SettingsView: React.FC = () => {
                 <span>{supabaseTestStatus.message}</span>
               </div>
             )}
+
+            {/* Cloud sync health: shows whether local records actually reached Supabase */}
+            <div
+              className={`p-3 rounded-lg text-[11px] space-y-1 border ${
+                syncStatus.lastError
+                  ? 'bg-[#FEF2F2] text-[#DC2626] border-[#DC2626]/30'
+                  : 'bg-[#F0FDF4] text-[#16A34A] border-[#16A34A]/30'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 font-semibold">
+                {syncStatus.lastError ? (
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                ) : (
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                )}
+                <span>
+                  {syncStatus.lastError
+                    ? 'Cloud sync needs attention'
+                    : syncStatus.lastSyncedAt
+                    ? 'Cloud sync is working'
+                    : 'Not synced yet'}
+                </span>
+              </div>
+              <p>
+                Last synced:{' '}
+                {syncStatus.lastSyncedAt
+                  ? new Date(syncStatus.lastSyncedAt).toLocaleString()
+                  : 'never'}
+              </p>
+              <p>
+                Waiting to upload: {syncStatus.pendingCount}{' '}
+                {syncStatus.pendingCount === 1 ? 'record' : 'records'}
+              </p>
+              {syncStatus.lastError && <p className="break-words">Error: {syncStatus.lastError}</p>}
+            </div>
 
             <div>
               <button
